@@ -1,186 +1,144 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
-	"os"
 	"sort"
+	"strings"
+	"time"
 
-	"github.com/joho/godotenv"
+	"github.com/go-co-op/gocron"
+	"github.com/google/go-github/v38/github"
+	"golang.org/x/oauth2"
 )
 
-const baseURL = "https://api.github.com"
-
-type User struct {
-	Login     string `json:"login"`
-	ID        int    `json:"id"`
-	AvatarURL string `json:"avatar_url"`
+type myPR struct {
+	*github.PullRequest
+	Review *github.PullRequestReview `json:"review"`
 }
 
-type BaseRepo struct {
-	Repo struct {
-		Name string `json:"name"`
-	} `json:"repo"`
+func getGitHubClient() (*github.Client, error) {
+	ctx := context.Background()
+	token := "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"
+
+	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
+	tc := oauth2.NewClient(ctx, ts)
+
+	client := github.NewClient(tc)
+	return client, nil
 }
 
-type HeadRepo struct {
-	Repo struct {
-		Name     string `json:"name"`
-		FullName string `json:"full_name"`
-	} `json:"repo"`
+func filterPullRequests(prs []*github.PullRequest) []*github.PullRequest {
+	var filteredPRs []*github.PullRequest
+	for _, pr := range prs {
+		if pr.GetState() == "open" && pr.GetUser().GetLogin() != "dependabot[bot]" {
+			filteredPRs = append(filteredPRs, pr)
+		}
+	}
+	return filteredPRs
 }
 
-type Label struct {
-	ID          int    `json:"id"`
-	Name        string `json:"name"`
-	Color       string `json:"color"`
-	Description string `json:"description"`
-}
-
-type Review struct {
-	State reviewState `json:"event"`
-}
-
-type PullRequest struct {
-	ID             int      `json:"id"`
-	HTMLURL        string   `json:"html_url"`
-	Title          string   `json:"title"`
-	User           User     `json:"user"`
-	Base           BaseRepo `json:"base"`
-	Number         int      `json:"number"`
-	CreatedAt      string   `json:"created_at"`
-	UpdatedAt      string   `json:"updated_at"`
-	Labels         []Label  `json:"labels"`
-	Draft          bool     `json:"draft"`
-	Head           HeadRepo `json:"head"`
-	Reviews        []Review `json:"reviews"`
-	SelectedReview Review   // New field to store selected review
-}
-
-type reviewState string
-
-const (
-	Approved         reviewState = "APPROVE"
-	ChangesRequested reviewState = "REQUEST_CHANGES"
-	Commented        reviewState = "COMMENT"
-	EmptyState       reviewState = "EMPTY"
-)
-
-func main() {
-	err := godotenv.Load()
+func lmao() []byte {
+	client, err := getGitHubClient()
 	if err != nil {
-		fmt.Println("Error loading .env file:", err)
-		return
+		fmt.Printf("Error creating GitHub client: %v\n", err)
 	}
 
-	token := os.Getenv("TOKEN")
-	if token == "" {
-		fmt.Println("GitHub token not found in .env")
-		return
-	}
+	myPRs := []*myPR{}
+	// List of repository full names (e.g., "owner/repo")
+	repositories := []string{"RedHatInsights/patchman-ui", "RedHatInsights/vulnerability-ui", "RedHatInsights/insights-dashboard", "RedHatInsights/insights-inventory-frontend", "RedHatInsights/compliance-frontend", "RedHatInsights/insights-advisor-frontend", "RedHatInsights/vuln4shift-frontend", "RedHatInsights/insights-remediations-frontend", "RedHatInsights/frontend-components", "RedHatInsights/ocp-advisor-frontend", "RedHatInsights/drift-frontend", "RedHatInsights/malware-detection-frontend", "RedHatInsights/tasks-frontend"}
 
-	repositories := []string{
-		"RedHatInsights/patchman-ui", "RedHatInsights/vulnerability-ui", "RedHatInsights/insights-dashboard", "RedHatInsights/insights-inventory-frontend", "RedHatInsights/compliance-frontend", "RedHatInsights/insights-advisor-frontend", "RedHatInsights/vuln4shift-frontend", "RedHatInsights/insights-remediations-frontend", "RedHatInsights/frontend-components", "RedHatInsights/ocp-advisor-frontend", "RedHatInsights/drift-frontend", "RedHatInsights/malware-detection-frontend", "RedHatInsights/tasks-frontend",
-	}
+	for _, repo := range repositories {
+		owner, repoName := parseRepositoryFullName(repo)
 
-	allPulls := []PullRequest{}
-	for _, repoLink := range repositories {
-		pulls, err := getPullRequests(repoLink, token)
+		// Fetch pull requests for the repository
+		pullRequests, _, err := client.PullRequests.List(context.Background(), owner, repoName, nil)
 		if err != nil {
-			fmt.Printf("Error fetching pull requests for %s: %s\n", repoLink, err)
+			fmt.Printf("Error fetching pull requests for %s: %v\n", repo, err)
 			continue
 		}
 
-		allPulls = append(allPulls, pulls...)
+		pullRequests = filterPullRequests(pullRequests)
+
+		for _, pr := range pullRequests {
+			// Fetch reviews for the pull request
+			reviews, _, err := client.PullRequests.ListReviews(context.Background(), owner, repoName, *pr.Number, nil)
+			if err != nil {
+				fmt.Printf("Error fetching reviews for PR %d: %v\n", *pr.Number, err)
+				continue
+			}
+			// allPrs = append(allPrs, pr)
+
+			// create an empty github.PullRequestReview
+
+			fmt.Printf("Reviews for PR #%d in %s:\n", *pr.Number, repo)
+
+			myReview := &github.PullRequestReview{}
+
+			if len(reviews) != 0 {
+				myReview = reviews[0]
+				for _, review := range reviews {
+					if review.GetState() == "APPROVED" || review.GetState() == "CHANGES_REQUESTED" {
+						myReview = review
+					}
+				}
+
+			}
+			// myReview print json
+			// create myPR struct
+			myPR := &myPR{PullRequest: pr}
+			myPR.Review = myReview
+			myPRs = append(myPRs, myPR)
+		}
 	}
 
-	// Sort pull requests from all repositories by UpdatedAt timestamp
-	sort.SliceStable(allPulls, func(i, j int) bool {
-		return allPulls[i].UpdatedAt > allPulls[j].UpdatedAt
+	sort.Slice(myPRs, func(i, j int) bool {
+		return myPRs[i].GetUpdatedAt().After(myPRs[j].GetUpdatedAt())
 	})
 
-	fmt.Printf("Pull requests from all repositories:\n")
-	for _, pull := range allPulls {
-		fmt.Printf("#%d: %s\n", pull.Number, pull.Title)
-		selectedReview, err := getReviewsForPullRequest(pull, token)
-		if err != nil {
-			fmt.Printf("Error fetching reviews for pull request #%d: %s\n", pull.Number, err)
-			continue
-		}
-		pull.SelectedReview = selectedReview
-		if pull.SelectedReview.State != EmptyState {
-			fmt.Printf("Selected Review State: %s\n", pull.SelectedReview.State)
-		} else {
-			// fmt.Println("No significant reviews found.")
-		}
+	jsonData, err := json.Marshal(myPRs)
+	if err != nil {
+		log.Fatal(err)
 	}
+
+	return jsonData
 }
 
-func getReviewsForPullRequest(pull PullRequest, token string) (Review, error) {
-	apiURL := fmt.Sprintf("%s/repos/%s/pulls/%d/reviews", baseURL, pull.Head.Repo.FullName, pull.Number)
+var jsonDataa = []byte{}
 
-	req, err := http.NewRequest("GET", apiURL, nil)
-	if err != nil {
-		return Review{}, err
-	}
+func runCronJobs() {
+	// 3
+	s := gocron.NewScheduler(time.UTC)
 
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	// 4
+	s.Every(40).Seconds().Do(func() {
+		fmt.Println("Running cron job")
+		jsonDataa = lmao()
+	})
+	s.StartAsync()
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return Review{}, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return Review{}, nil
-	}
-
-	var reviews []Review
-	err = json.NewDecoder(resp.Body).Decode(&reviews)
-	if err != nil {
-		return Review{}, err
-	}
-
-	var selectedReview Review = Review{State: EmptyState}
-	for _, review := range reviews {
-		if review.State == Approved || review.State == ChangesRequested {
-			selectedReview = review
-			break
-		} else if review.State == Commented && selectedReview.State != Approved && selectedReview.State != ChangesRequested {
-			selectedReview = review
-		}
-	}
-
-	return selectedReview, nil
 }
 
-func getPullRequests(repoLink, token string) ([]PullRequest, error) {
-	apiURL := fmt.Sprintf("%s/repos/%s/pulls?state=open", baseURL, repoLink)
+func main() {
 
-	req, err := http.NewRequest("GET", apiURL, nil)
-	if err != nil {
-		return nil, err
+	runCronJobs()
+
+	// return jsonData as a server on /
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println("Serving request")
+		w.Write(jsonDataa)
+	})
+	http.ListenAndServe(":8080", nil)
+}
+
+func parseRepositoryFullName(fullName string) (owner, repo string) {
+	parts := strings.Split(fullName, "/")
+	if len(parts) == 2 {
+		owner = parts[0]
+		repo = parts[1]
 	}
-
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var pulls []PullRequest
-	err = json.NewDecoder(resp.Body).Decode(&pulls)
-	if err != nil {
-		return nil, err
-	}
-
-	return pulls, nil
+	return
 }
