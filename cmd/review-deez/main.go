@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -15,23 +16,21 @@ import (
 	"golang.org/x/oauth2"
 )
 
-type myPR struct {
+type PullRequestWithReview struct {
 	*github.PullRequest
-	Review *github.PullRequestReview `json:"review"`
+	LatestReview *github.PullRequestReview `json:"review"`
 }
 
-func getGitHubClient() (*github.Client, error) {
+func createGitHubClient() (*github.Client, error) {
 	ctx := context.Background()
-	token := "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"
-
-	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
-	tc := oauth2.NewClient(ctx, ts)
-
-	client := github.NewClient(tc)
+	accessToken := "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"
+	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: accessToken})
+	httpClient := oauth2.NewClient(ctx, tokenSource)
+	client := github.NewClient(httpClient)
 	return client, nil
 }
 
-func filterPullRequests(prs []*github.PullRequest) []*github.PullRequest {
+func filterOpenNonDependabotPRs(prs []*github.PullRequest) []*github.PullRequest {
 	var filteredPRs []*github.PullRequest
 	for _, pr := range prs {
 		if pr.GetState() == "open" && pr.GetUser().GetLogin() != "dependabot[bot]" {
@@ -41,97 +40,79 @@ func filterPullRequests(prs []*github.PullRequest) []*github.PullRequest {
 	return filteredPRs
 }
 
-func lmao() []byte {
-	client, err := getGitHubClient()
+func fetchLatestReviewForPR(client *github.Client, owner, repoName string, prNumber int) (*github.PullRequestReview, error) {
+	reviews, _, err := client.PullRequests.ListReviews(context.Background(), owner, repoName, prNumber, nil)
 	if err != nil {
-		fmt.Printf("Error creating GitHub client: %v\n", err)
+		return nil, err
 	}
 
-	myPRs := []*myPR{}
-	// List of repository full names (e.g., "owner/repo")
-	repositories := []string{"RedHatInsights/patchman-ui", "RedHatInsights/vulnerability-ui", "RedHatInsights/insights-dashboard", "RedHatInsights/insights-inventory-frontend", "RedHatInsights/compliance-frontend", "RedHatInsights/insights-advisor-frontend", "RedHatInsights/vuln4shift-frontend", "RedHatInsights/insights-remediations-frontend", "RedHatInsights/frontend-components", "RedHatInsights/ocp-advisor-frontend", "RedHatInsights/drift-frontend", "RedHatInsights/malware-detection-frontend", "RedHatInsights/tasks-frontend"}
+	var latestReview *github.PullRequestReview
+
+	for _, review := range reviews {
+		if review.GetState() == "APPROVED" || review.GetState() == "CHANGES_REQUESTED" {
+			latestReview = review
+			break
+		}
+	}
+
+	return latestReview, nil
+}
+
+func fetchPullRequestsWithReviews(client *github.Client, repositories []string) []*PullRequestWithReview {
+	var pullRequestsWithReviews []*PullRequestWithReview
 
 	for _, repo := range repositories {
 		owner, repoName := parseRepositoryFullName(repo)
-
-		// Fetch pull requests for the repository
 		pullRequests, _, err := client.PullRequests.List(context.Background(), owner, repoName, nil)
 		if err != nil {
 			fmt.Printf("Error fetching pull requests for %s: %v\n", repo, err)
 			continue
 		}
 
-		pullRequests = filterPullRequests(pullRequests)
+		openNonDependabotPRs := filterOpenNonDependabotPRs(pullRequests)
 
-		for _, pr := range pullRequests {
-			// Fetch reviews for the pull request
-			reviews, _, err := client.PullRequests.ListReviews(context.Background(), owner, repoName, *pr.Number, nil)
+		for _, pr := range openNonDependabotPRs {
+			latestReview, err := fetchLatestReviewForPR(client, owner, repoName, *pr.Number)
 			if err != nil {
 				fmt.Printf("Error fetching reviews for PR %d: %v\n", *pr.Number, err)
 				continue
 			}
-			// allPrs = append(allPrs, pr)
 
-			// create an empty github.PullRequestReview
-
-			fmt.Printf("Reviews for PR #%d in %s:\n", *pr.Number, repo)
-
-			myReview := &github.PullRequestReview{}
-
-			if len(reviews) != 0 {
-				myReview = reviews[0]
-				for _, review := range reviews {
-					if review.GetState() == "APPROVED" || review.GetState() == "CHANGES_REQUESTED" {
-						myReview = review
-					}
-				}
-
+			pullRequestWithReview := &PullRequestWithReview{
+				PullRequest:  pr,
+				LatestReview: latestReview,
 			}
-			// myReview print json
-			// create myPR struct
-			myPR := &myPR{PullRequest: pr}
-			myPR.Review = myReview
-			myPRs = append(myPRs, myPR)
+			pullRequestsWithReviews = append(pullRequestsWithReviews, pullRequestWithReview)
 		}
 	}
 
-	sort.Slice(myPRs, func(i, j int) bool {
-		return myPRs[i].GetUpdatedAt().After(myPRs[j].GetUpdatedAt())
-	})
-
-	jsonData, err := json.Marshal(myPRs)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	return jsonData
+	return pullRequestsWithReviews
 }
 
-var jsonDataa = []byte{}
-
 func runCronJobs() {
-	// 3
-	s := gocron.NewScheduler(time.UTC)
-
-	// 4
-	s.Every(40).Seconds().Do(func() {
+	scheduler := gocron.NewScheduler(time.UTC)
+	scheduler.Every(10).Minutes().Do(func() {
 		fmt.Println("Running cron job")
-		jsonDataa = lmao()
+		data = generateJSONData()
 	})
-	s.StartAsync()
-
+	scheduler.StartAsync()
 }
 
 func main() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
 
+	}
 	runCronJobs()
 
-	// return jsonData as a server on /
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("Serving request")
-		w.Write(jsonDataa)
+		w.Write(data)
 	})
-	http.ListenAndServe(":8080", nil)
+
+	fmt.Println("Server listening on :" + port)
+	http.ListenAndServe(":"+port, nil)
 }
 
 func parseRepositoryFullName(fullName string) (owner, repo string) {
@@ -141,4 +122,29 @@ func parseRepositoryFullName(fullName string) (owner, repo string) {
 		repo = parts[1]
 	}
 	return
+}
+
+var data, _ = json.Marshal([]string{})
+
+func generateJSONData() []byte {
+	client, err := createGitHubClient()
+	if err != nil {
+		log.Printf("Error creating GitHub client: %v\n", err)
+		return nil
+	}
+
+	repositories := []string{"RedHatInsights/patchman-ui", "RedHatInsights/vulnerability-ui", "RedHatInsights/insights-dashboard", "RedHatInsights/insights-inventory-frontend", "RedHatInsights/compliance-frontend", "RedHatInsights/insights-advisor-frontend", "RedHatInsights/vuln4shift-frontend", "RedHatInsights/insights-remediations-frontend", "RedHatInsights/frontend-components", "RedHatInsights/ocp-advisor-frontend", "RedHatInsights/drift-frontend", "RedHatInsights/malware-detection-frontend", "RedHatInsights/tasks-frontend"}
+
+	pullRequestsWithReviews := fetchPullRequestsWithReviews(client, repositories)
+
+	sort.Slice(pullRequestsWithReviews, func(i, j int) bool {
+		return pullRequestsWithReviews[i].GetUpdatedAt().After(pullRequestsWithReviews[j].GetUpdatedAt())
+	})
+
+	jsonData, err := json.Marshal(pullRequestsWithReviews)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return jsonData
 }
