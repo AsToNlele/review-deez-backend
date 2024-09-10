@@ -24,6 +24,7 @@ type PullRequestWithReview struct {
 func createGitHubClient() (*github.Client, error) {
 	ctx := context.Background()
 	accessToken := os.Getenv("TOKEN")
+	fmt.Println("TOKEN" + accessToken)
 	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: accessToken})
 	httpClient := oauth2.NewClient(ctx, tokenSource)
 	client := github.NewClient(httpClient)
