@@ -24,7 +24,6 @@ type PullRequestWithReview struct {
 func createGitHubClient() (*github.Client, error) {
 	ctx := context.Background()
 	accessToken := os.Getenv("TOKEN")
-	fmt.Println("TOKEN" + accessToken)
 	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: accessToken})
 	httpClient := oauth2.NewClient(ctx, tokenSource)
 	client := github.NewClient(httpClient)
@@ -108,6 +107,7 @@ func main() {
 	runCronJobs()
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Write(data)
 	})
 
